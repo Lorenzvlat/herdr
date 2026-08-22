@@ -296,6 +296,95 @@ fn client_window_title_requests_round_trip() {
 }
 
 #[test]
+fn client_presentation_pi_request_and_response_round_trip() {
+    let request = Request {
+        id: "req_pi_presentation".into(),
+        method: Method::ClientPresentationPi(ClientPresentationPiParams {
+            session: "firstmate-lab".into(),
+        }),
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["method"], "client.presentation.pi");
+    assert_eq!(json["params"]["session"], "firstmate-lab");
+    let restored: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, request);
+
+    let response = SuccessResponse {
+        id: "req_pi_presentation".into(),
+        result: ResponseResult::ClientPresentationPi {
+            session: "firstmate-lab".into(),
+            client_id: 17,
+            tokens: ClientPresentationPiTokens(Some(vec![
+                vec![
+                    crate::config::AgentSidebarToken::StateIcon,
+                    crate::config::AgentSidebarToken::Agent,
+                    crate::config::AgentSidebarToken::Tab,
+                ],
+                vec![
+                    crate::config::AgentSidebarToken::StateText,
+                    crate::config::AgentSidebarToken::Custom("nm_summary".into()),
+                ],
+            ])),
+        },
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["result"]["type"], "client_presentation_pi");
+    assert_eq!(json["result"]["session"], "firstmate-lab");
+    assert_eq!(json["result"]["client_id"], 17);
+    assert_eq!(
+        json["result"]["tokens"],
+        serde_json::json!([
+            ["state_icon", "agent", "tab"],
+            ["state_text", "$nm_summary"]
+        ])
+    );
+    let restored: SuccessResponse = serde_json::from_value(json).unwrap();
+    assert_eq!(restored, response);
+}
+
+#[test]
+fn client_presentation_pi_schema_advertises_exact_capability() {
+    fn find_variant<'a>(value: &'a serde_json::Value, tag: &str) -> Option<&'a serde_json::Value> {
+        match value {
+            serde_json::Value::Object(object) => {
+                if object
+                    .get("properties")
+                    .and_then(|properties| properties.get("type"))
+                    .and_then(|kind| kind.get("const"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(tag)
+                {
+                    return Some(value);
+                }
+                object.values().find_map(|child| find_variant(child, tag))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(|child| find_variant(child, tag))
+            }
+            _ => None,
+        }
+    }
+
+    let schema = protocol_schema_document();
+    let encoded = serde_json::to_string(&schema).unwrap();
+
+    assert!(encoded.contains("client.presentation.pi"));
+    assert_eq!(
+        schema["schemas"]["request"]["$defs"]["ClientPresentationPiParams"]["required"],
+        serde_json::json!(["session"])
+    );
+    let response = find_variant(&schema, "client_presentation_pi").unwrap();
+    assert!(response["required"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("tokens")));
+    assert_eq!(
+        schema["schemas"]["success_response"]["$defs"]["ClientPresentationPiTokens"]["type"],
+        serde_json::json!(["array", "null"])
+    );
+}
+
+#[test]
 fn agent_view_requests_round_trip() {
     let set_json = serde_json::json!({
         "id": "view-set",

@@ -38,6 +38,7 @@ herdr api schema --output herdr-api.schema.json
 - ペインの一覧、調査、分割、入れ替え、フォーカス、リサイズ、名前変更、読み取り、クローズ、入力送信
 - CLI ヘルパーを通じたエージェントの一覧、調査、読み取り、プロンプト、待機、名前変更、フォーカス、起動、アタッチ
 - フックやプラグインからのカスタムエージェント状態の報告
+- アタッチされた単一のフルアプリクライアントにおける、ライブの Pi 表示トークンの検証
 - イベントの購読と、出力や状態変化の待機
 - 組み込みインテグレーションのインストールとアンインストール
 - サーバーの停止と設定のリロード
@@ -94,7 +95,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | --- | --- |
 | サーバー | `ping`、`server.stop`、`server.reload_config`、`server.agent_manifests`、`server.reload_agent_manifests` |
 | 通知 | `notification.show` |
-| クライアント | `client.window_title.set`、`client.window_title.clear` |
+| クライアント | `client.window_title.set`、`client.window_title.clear`、`client.presentation.pi` |
 | セッション | `session.snapshot` |
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
@@ -274,6 +275,50 @@ reason の候補は `shown`、`disabled`、`rate_limited`、`no_foreground_clien
 ```
 
 `client.window_title.clear` はタイトルを `ui.window_title` に戻します。レスポンスは `type: "client_window_title"` で、`changed` と、`set`、`cleared`、`no_foreground_client` のいずれかの reason を含みます。
+
+### ライブ Pi 表示の証明
+
+`client.presentation.pi` は、実行中の TUI に適用された Pi 固有の Agent 表示を
+正確に検証する自動化向けの読み取り専用機能です。クライアントを所有するはずの名前付き
+セッションを渡します:
+
+```json
+{"id":"pi_live","method":"client.presentation.pi","params":{"session":"firstmate-lab"}}
+```
+
+このメソッドは、そのセッションにアタッチされたフルアプリクライアントがちょうど 1 つ
+ある場合にのみ成功します。レスポンスは正規化されたライブの
+`ui.sidebar.agents.rows_by_agent.pi` トークン構造を両方の識別子に結び付けます:
+
+```json
+{
+  "id": "pi_live",
+  "result": {
+    "type": "client_presentation_pi",
+    "session": "firstmate-lab",
+    "client_id": 17,
+    "tokens": [
+      ["state_icon", "agent", "tab"],
+      ["state_text", "$nm_summary"]
+    ]
+  }
+}
+```
+
+ライブ表示に Pi 固有の上書きがない場合、`tokens` は `null` です。明示的に空の
+上書きの場合は `[]` です。トークンスタイルを含む他の有効な構造も、設定パーサーが
+受け付ける同じ正規形でラウンドトリップします。ディスク上のファイルだけを変更しても
+値は変わらず、サポートされる設定リロードが別の表示状態を適用した後に変わります。
+
+失敗時の安定した API エラーコードは `invalid_params`、`session_mismatch`、
+`no_attached_client`、`ambiguous_clients`、`invalid_client_presentation` です。
+Herdr は複数の適格クライアントから 1 つを選びません。レスポンスは他の設定や
+クライアント状態を公開せず、設定のリロード、フォーカス変更、クライアント変更も行いません。
+
+サポートの有無は、インストール済みの `herdr api schema --json` 出力に
+`client.presentation.pi` リクエストと `client_presentation_pi` レスポンスフィールドが
+あることを確認して判定してください。Herdr のバージョンやプロトコル番号だけからこの機能を
+有効にしないでください。
 
 Worktree メソッドは Git チェックアウトを Herdr ワークスペースとして管理します。`worktree.create` はチェックアウトを作成し、新しい `workspace`、`tab`、`root_pane`、`worktree` のレコードを返します。要求されたブランチがローカルに既存ならそれをチェックアウトし、なければ要求されたベースまたは `HEAD` からブランチを作成します。`worktree.open` は既存のチェックアウトを開くか、すでに開いているワークスペースを返します。`worktree.remove` はリンクされた子ワークスペースに対して `git worktree remove` を実行し、ブランチは決して削除しません。
 

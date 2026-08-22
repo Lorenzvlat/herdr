@@ -1689,6 +1689,19 @@
           ],
           "type": "object"
         },
+        "ClientPresentationPiParams": {
+          "additionalProperties": false,
+          "properties": {
+            "session": {
+              "description": "Named Herdr session that must own the live presentation client.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session"
+          ],
+          "type": "object"
+        },
         "ClientWindowTitleSetParams": {
           "properties": {
             "title": {
@@ -4574,6 +4587,22 @@
         {
           "properties": {
             "method": {
+              "const": "client.presentation.pi",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ClientPresentationPiParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "session.snapshot",
               "type": "string"
             },
@@ -6327,6 +6356,37 @@
           ],
           "type": "string"
         },
+        "AgentSidebarToken": {
+          "oneOf": [
+            {
+              "pattern": "^(state_icon|state_text|workspace|tab|pane|agent|terminal_title|terminal_title_stripped|\\$[A-Za-z0-9_-]{1,32})$",
+              "type": "string"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "bold": {
+                  "type": "boolean"
+                },
+                "dim": {
+                  "type": "boolean"
+                },
+                "fg": {
+                  "pattern": "^#[A-Fa-f0-9]{3}([A-Fa-f0-9]{3})?$",
+                  "type": "string"
+                },
+                "token": {
+                  "pattern": "^(state_icon|state_text|workspace|tab|pane|agent|terminal_title|terminal_title_stripped|\\$[A-Za-z0-9_-]{1,32})$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "token"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "AgentStatus": {
           "enum": [
             "idle",
@@ -6336,6 +6396,19 @@
             "unknown"
           ],
           "type": "string"
+        },
+        "ClientPresentationPiTokens": {
+          "description": "Required response field whose JSON value is either canonical Pi tokens or\n`null` when no Pi-specific override is applied.",
+          "items": {
+            "items": {
+              "$ref": "#/schemas/success_response/$defs/AgentSidebarToken"
+            },
+            "type": "array"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -9467,6 +9540,33 @@
                 "type",
                 "changed",
                 "reason"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "client_id": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "tokens": {
+                  "$ref": "#/schemas/success_response/$defs/ClientPresentationPiTokens",
+                  "description": "Canonical `ui.sidebar.agents.rows_by_agent.pi` tokens. `null` means\nthe live presentation has no Pi-specific override; `[]` is an\nexplicitly empty override."
+                },
+                "type": {
+                  "const": "client_presentation_pi",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "session",
+                "client_id",
+                "tokens"
               ],
               "type": "object"
             },

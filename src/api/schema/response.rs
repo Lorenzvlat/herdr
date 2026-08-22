@@ -39,6 +39,12 @@ pub struct ErrorBody {
     pub message: String,
 }
 
+/// Required response field whose JSON value is either canonical Pi tokens or
+/// `null` when no Pi-specific override is applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct ClientPresentationPiTokens(pub Option<Vec<Vec<crate::config::AgentSidebarToken>>>);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseResult {
@@ -209,6 +215,14 @@ pub enum ResponseResult {
     ClientWindowTitle {
         changed: bool,
         reason: ClientWindowTitleReason,
+    },
+    ClientPresentationPi {
+        session: String,
+        client_id: u64,
+        /// Canonical `ui.sidebar.agents.rows_by_agent.pi` tokens. `null` means
+        /// the live presentation has no Pi-specific override; `[]` is an
+        /// explicitly empty override.
+        tokens: ClientPresentationPiTokens,
     },
     IntegrationInstall {
         target: IntegrationTarget,

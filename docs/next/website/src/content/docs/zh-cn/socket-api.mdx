@@ -38,6 +38,7 @@ socket API 可以:
 - 列出、检查、分割、交换、聚焦、调整、重命名、读取、关闭窗格并向其发送输入
 - 通过 CLI 辅助命令列出、检查、读取、提示、等待、重命名、聚焦、启动和附加智能体
 - 从钩子和插件上报自定义智能体状态
+- 验证单个已附加完整应用客户端的实时 Pi 展示令牌
 - 订阅事件并等待输出或状态变化
 - 安装和卸载内置集成
 - 停止服务器并重载配置
@@ -94,7 +95,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | --- | --- |
 | 服务器 | `ping`、`server.stop`、`server.reload_config`、`server.agent_manifests`、`server.reload_agent_manifests` |
 | 通知 | `notification.show` |
-| 客户端 | `client.window_title.set`、`client.window_title.clear` |
+| 客户端 | `client.window_title.set`、`client.window_title.clear`、`client.presentation.pi` |
 | 会话 | `session.snapshot` |
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
@@ -274,6 +275,46 @@ herdr notification show "build failed" --body "api workspace" --position top-lef
 ```
 
 `client.window_title.clear` 把标题交还给 `ui.window_title`。响应是 `type: "client_window_title"`,带 `changed` 和 `set`、`cleared` 或 `no_foreground_client` 之一的 reason。
+
+### 实时 Pi 展示证明
+
+`client.presentation.pi` 是一项只读功能，供自动化精确验证运行中 TUI 已应用的
+Pi 专用 Agent 展示。传入预期拥有该客户端的命名会话:
+
+```json
+{"id":"pi_live","method":"client.presentation.pi","params":{"session":"firstmate-lab"}}
+```
+
+仅当该会话恰好有一个已附加的完整应用客户端时，此方法才会成功。响应把规范化的实时
+`ui.sidebar.agents.rows_by_agent.pi` 令牌结构绑定到两个标识:
+
+```json
+{
+  "id": "pi_live",
+  "result": {
+    "type": "client_presentation_pi",
+    "session": "firstmate-lab",
+    "client_id": 17,
+    "tokens": [
+      ["state_icon", "agent", "tab"],
+      ["state_text", "$nm_summary"]
+    ]
+  }
+}
+```
+
+实时展示没有 Pi 专用覆盖时，`tokens` 为 `null`;显式空覆盖时为 `[]`。其他有效
+令牌结构（包括令牌样式）会按配置解析器接受的同一规范形式往返。仅修改磁盘上的文件
+不会改变该值;受支持的配置重载应用不同展示状态后，该值才会改变。
+
+失败使用稳定的 API 错误码: `invalid_params`、`session_mismatch`、
+`no_attached_client`、`ambiguous_clients` 或 `invalid_client_presentation`。
+Herdr 从不在多个符合条件的客户端之间擅自选择。响应不公开其他配置或客户端状态，
+也不会重载配置、更改焦点或修改客户端。
+
+请检查已安装版本的 `herdr api schema --json` 输出中是否含有
+`client.presentation.pi` 请求和 `client_presentation_pi` 响应字段来发现支持情况。
+不要仅根据 Herdr 版本或协议号启用此功能。
 
 Worktree 方法把 Git 检出作为 Herdr 工作区管理。`worktree.create` 创建检出,并返回新的 `workspace`、`tab`、`root_pane` 和 `worktree` 记录。请求的分支已在本地存在时检出它;否则从请求的 base 或 `HEAD` 创建分支。`worktree.open` 打开已有检出,或返回已打开的工作区。`worktree.remove` 对关联的子工作区运行 `git worktree remove`,从不删除分支。
 
