@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,14 @@ fn validate_sidebar_rows<T>(rows: &[Vec<T>]) -> Result<(), String> {
         return Err(format!(
             "sidebar rows may contain at most {MAX_SIDEBAR_TOKENS_PER_ROW} tokens"
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_agent_sidebar_rows(rows: &[Vec<AgentSidebarToken>]) -> Result<(), String> {
+    validate_sidebar_rows(rows)?;
+    for token in rows.iter().flatten() {
+        validate_agent_sidebar_token(token)?;
     }
     Ok(())
 }
@@ -117,6 +126,40 @@ pub enum AgentSidebarToken {
     },
 }
 
+impl schemars::JsonSchema for AgentSidebarToken {
+    fn schema_name() -> Cow<'static, str> {
+        "AgentSidebarToken".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "oneOf": [
+                {
+                    "type": "string",
+                    "pattern": "^(state_icon|state_text|workspace|tab|pane|agent|terminal_title|terminal_title_stripped|\\$[A-Za-z0-9_-]{1,32})$"
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "token": {
+                            "type": "string",
+                            "pattern": "^(state_icon|state_text|workspace|tab|pane|agent|terminal_title|terminal_title_stripped|\\$[A-Za-z0-9_-]{1,32})$"
+                        },
+                        "fg": {
+                            "type": "string",
+                            "pattern": "^#[A-Fa-f0-9]{3}([A-Fa-f0-9]{3})?$"
+                        },
+                        "bold": { "type": "boolean" },
+                        "dim": { "type": "boolean" }
+                    },
+                    "required": ["token"],
+                    "additionalProperties": false
+                }
+            ]
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpaceSidebarToken {
     StateIcon,
@@ -196,15 +239,33 @@ where
             "unknown sidebar token `{value}`; custom tokens must start with `$`"
         ));
     };
-    if name.is_empty()
-        || name.len() > 32
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
+    if !valid_custom_sidebar_token_name(name) {
         return Err(format!("invalid custom sidebar token `{value}`"));
     }
     Ok(T::from(name.to_string()))
+}
+
+fn valid_custom_sidebar_token_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
+fn validate_agent_sidebar_token(token: &AgentSidebarToken) -> Result<(), String> {
+    match token {
+        AgentSidebarToken::Custom(name) if !valid_custom_sidebar_token_name(name) => {
+            Err(format!("invalid custom sidebar token `${name}`"))
+        }
+        AgentSidebarToken::Styled { token, .. }
+            if matches!(token.as_ref(), AgentSidebarToken::Styled { .. }) =>
+        {
+            Err("nested sidebar token styles are not canonical".to_string())
+        }
+        AgentSidebarToken::Styled { token, .. } => validate_agent_sidebar_token(token),
+        _ => Ok(()),
+    }
 }
 
 fn serialize_styled_token<S>(

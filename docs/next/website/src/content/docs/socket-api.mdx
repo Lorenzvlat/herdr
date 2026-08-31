@@ -42,6 +42,7 @@ The socket API can:
 - list, inspect, split, swap, focus, resize, rename, read, close, and send input to panes
 - list, inspect, read, prompt, wait on, rename, focus, start, and attach agents through CLI helpers
 - report custom agent state from hooks and plugins
+- verify the live Pi presentation tokens for one attached full-app client
 - subscribe to events and wait for output or state changes
 - install and uninstall built-in integrations
 - stop the server and reload config
@@ -98,7 +99,7 @@ Raw socket method names use dot notation:
 | --- | --- |
 | Server | `ping`, `server.stop`, `server.reload_config`, `server.agent_manifests`, `server.reload_agent_manifests` |
 | Notification | `notification.show` |
-| Client | `client.window_title.set`, `client.window_title.clear` |
+| Client | `client.window_title.set`, `client.window_title.clear`, `client.presentation.pi` |
 | Session | `session.snapshot` |
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
@@ -385,6 +386,53 @@ Set or clear the foreground client's outer terminal window title:
 `client.window_title.clear` hands the title back to `ui.window_title`. The response is
 `type: "client_window_title"` with `changed` and reason `set`, `cleared`, or
 `no_foreground_client`.
+
+### Live Pi presentation proof
+
+`client.presentation.pi` is a read-only capability for automation that must
+verify the exact Pi-specific Agent presentation applied by a running TUI. Pass
+the named session expected to own the client:
+
+```json
+{"id":"pi_live","method":"client.presentation.pi","params":{"session":"firstmate-lab"}}
+```
+
+The method succeeds only when that exact session has one attached full-app
+client. Its response binds the canonical live
+`ui.sidebar.agents.rows_by_agent.pi` token structure to both identities:
+
+```json
+{
+  "id": "pi_live",
+  "result": {
+    "type": "client_presentation_pi",
+    "session": "firstmate-lab",
+    "client_id": 17,
+    "tokens": [
+      ["state_icon", "agent", "tab"],
+      ["state_text", "$nm_summary"]
+    ]
+  }
+}
+```
+
+`tokens` is `null` when the live presentation has no Pi-specific override and
+`[]` when it has an explicitly empty override. Other valid token structures,
+including token styles, round-trip in the same canonical form accepted by
+the config parser. The value remains unchanged when the file on disk changes;
+it changes after a supported config reload applies different presentation
+state.
+
+Failures use stable API error codes: `invalid_params`, `session_mismatch`,
+`no_attached_client`, `ambiguous_clients`, or
+`invalid_client_presentation`. Herdr never chooses between multiple eligible
+clients. The response exposes no other config or client state and does not
+reload config, change focus, or mutate the client.
+
+Discover support by checking the installed `herdr api schema --json` output for
+the `client.presentation.pi` request and `client_presentation_pi` response
+fields. Do not enable this capability from Herdr's version or protocol number
+alone.
 
 Worktree methods manage Git checkouts as Herdr workspaces. `worktree.create` creates a checkout and returns the new `workspace`, `tab`, `root_pane`, and `worktree` records. If the requested branch already exists locally, it checks out that branch; otherwise it creates the branch from the requested base or `HEAD`. `worktree.open` opens an existing checkout or returns the already-open workspace. `worktree.remove` runs `git worktree remove` against a linked child workspace and never deletes the branch.
 

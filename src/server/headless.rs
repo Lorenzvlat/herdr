@@ -64,6 +64,7 @@ use crate::server::socket_paths::{
 use crate::server::terminal_attach::paste_payload_for_runtime;
 
 mod pane_graphics;
+mod presentation;
 
 use crate::protocol::MAX_GRAPHICS_FRAME_SIZE;
 use pane_graphics::RetainedGraphicsOutcome;
@@ -286,6 +287,8 @@ enum AltScreenReadConflict {
 /// The headless server — runs the herdr event loop without a real terminal.
 pub struct HeadlessServer {
     app: app::App,
+    /// Stable public identity of the session served by this process.
+    session_name: String,
     #[cfg(unix)]
     api_tx: Option<api::ApiRequestSender>,
     // Kept on every platform so dropping HeadlessServer owns API server shutdown.
@@ -506,6 +509,8 @@ impl HeadlessServer {
         let _ = api_tx;
         Ok(Self {
             app,
+            session_name: crate::session::active_name()
+                .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned()),
             #[cfg(unix)]
             api_tx,
             api_server,
@@ -3617,6 +3622,13 @@ impl HeadlessServer {
             return false;
         }
 
+        if let api::schema::Method::ClientPresentationPi(params) = &msg.request.method {
+            let response =
+                self.handle_client_presentation_pi_api(msg.request.id.clone(), params.clone());
+            let _ = msg.respond_to.send(response);
+            return false;
+        }
+
         let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {
             AltScreenReadConflict::None => None,
             AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
@@ -5354,6 +5366,9 @@ mod tests {
     }
 
     fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServer {
+        static NEXT_TEST_SERVER: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+
         let config = crate::config::Config::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = crate::app::App::new(&config, true, None, api_rx, event_hub);
@@ -5362,12 +5377,13 @@ mod tests {
         app.local_input_source_switch = false;
 
         let dir = std::env::temp_dir().join(format!(
-            "hh-{}-{}",
+            "hh-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            NEXT_TEST_SERVER.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = fs::create_dir_all(&dir);
         let socket_path = dir.join("client.sock");
@@ -5388,6 +5404,7 @@ mod tests {
 
         HeadlessServer {
             app,
+            session_name: "test-session".to_owned(),
             #[cfg(unix)]
             api_tx: None,
             api_server: None,
@@ -6001,6 +6018,297 @@ mod tests {
             control_rx,
             render_rx,
         )
+    }
+
+    fn attach_test_app_client(
+        server: &mut HeadlessServer,
+        client_id: u64,
+    ) -> (
+        std::sync::mpsc::Receiver<Vec<u8>>,
+        std::sync::mpsc::Receiver<Vec<u8>>,
+    ) {
+        let (writer, control_rx, render_rx) = test_client_writer();
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 10,
+            cell_height_px: 20,
+            render_encoding: RenderEncoding::SemanticFrame,
+            keybindings: None,
+            direct_attach_requested: false,
+            direct_graphics: false,
+            writer,
+        }));
+        (control_rx, render_rx)
+    }
+
+    fn attach_test_pending_terminal_client(server: &mut HeadlessServer, client_id: u64) {
+        let (writer, _control_rx, _render_rx) = test_client_writer();
+        assert!(server.handle_server_event(ServerEvent::ClientConnected {
+            client_id,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 10,
+            cell_height_px: 20,
+            render_encoding: RenderEncoding::SemanticFrame,
+            keybindings: None,
+            direct_attach_requested: true,
+            direct_graphics: false,
+            writer,
+        }));
+    }
+
+    fn request_client_presentation_pi(
+        server: &mut HeadlessServer,
+        session: &str,
+    ) -> (bool, serde_json::Value) {
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        let changed = server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+            request: api::schema::Request {
+                id: "pi-presentation".into(),
+                method: api::schema::Method::ClientPresentationPi(
+                    api::schema::ClientPresentationPiParams {
+                        session: session.to_owned(),
+                    },
+                ),
+            },
+            respond_to,
+            response_write_complete: None,
+            stream_active: None,
+        });
+        let response = response_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("Pi presentation response");
+        (
+            changed,
+            serde_json::from_str(&response).expect("JSON response"),
+        )
+    }
+
+    fn required_pi_presentation_tokens() -> Vec<Vec<crate::config::AgentSidebarToken>> {
+        vec![
+            vec![
+                crate::config::AgentSidebarToken::StateIcon,
+                crate::config::AgentSidebarToken::Agent,
+                crate::config::AgentSidebarToken::Tab,
+            ],
+            vec![
+                crate::config::AgentSidebarToken::StateText,
+                crate::config::AgentSidebarToken::Custom("nm_summary".into()),
+            ],
+        ]
+    }
+
+    #[test]
+    fn client_presentation_pi_requires_exact_session_and_one_attached_client() {
+        let mut server = test_headless_server();
+
+        let (changed, response) = request_client_presentation_pi(&mut server, "bad/session");
+        assert!(!changed);
+        assert_eq!(response["error"]["code"], "invalid_params");
+
+        let (changed, response) = request_client_presentation_pi(&mut server, "other-session");
+        assert!(!changed);
+        assert_eq!(response["error"]["code"], "session_mismatch");
+
+        let (changed, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert!(!changed);
+        assert_eq!(response["error"]["code"], "no_attached_client");
+
+        attach_test_pending_terminal_client(&mut server, 5);
+        let (changed, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert!(!changed);
+        assert_eq!(response["error"]["code"], "no_attached_client");
+        assert!(server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 5 }));
+
+        let _client_7 = attach_test_app_client(&mut server, 7);
+        let (changed, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert!(!changed);
+        assert_eq!(response["result"]["client_id"], 7);
+        assert_eq!(response["result"]["session"], "test-session");
+
+        let _client_8 = attach_test_app_client(&mut server, 8);
+        let (changed, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert!(!changed);
+        assert_eq!(response["error"]["code"], "ambiguous_clients");
+        assert!(response["result"].is_null());
+
+        assert!(server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 8 }));
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(response["result"]["client_id"], 7);
+
+        assert!(server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 7 }));
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(response["error"]["code"], "no_attached_client");
+    }
+
+    #[test]
+    fn client_presentation_pi_round_trips_required_other_empty_and_missing_tokens() {
+        let mut server = test_headless_server();
+        let _client = attach_test_app_client(&mut server, 17);
+
+        server
+            .app
+            .state
+            .sidebar_agents
+            .rows_by_agent
+            .insert("pi".into(), required_pi_presentation_tokens());
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(
+            response["result"]["tokens"],
+            serde_json::json!([
+                ["state_icon", "agent", "tab"],
+                ["state_text", "$nm_summary"]
+            ])
+        );
+
+        server.app.state.sidebar_agents.rows_by_agent.insert(
+            "pi".into(),
+            vec![
+                vec![crate::config::AgentSidebarToken::Agent],
+                vec![crate::config::AgentSidebarToken::Pane],
+            ],
+        );
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(
+            response["result"]["tokens"],
+            serde_json::json!([["agent"], ["pane"]])
+        );
+
+        server
+            .app
+            .state
+            .sidebar_agents
+            .rows_by_agent
+            .insert("pi".into(), Vec::new());
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(response["result"]["tokens"], serde_json::json!([]));
+
+        server.app.state.sidebar_agents.rows_by_agent.remove("pi");
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert!(response["result"]["tokens"].is_null());
+    }
+
+    #[test]
+    fn client_presentation_pi_rejects_noncanonical_internal_tokens() {
+        let mut server = test_headless_server();
+        let _client = attach_test_app_client(&mut server, 23);
+
+        server.app.state.sidebar_agents.rows_by_agent.insert(
+            "pi".into(),
+            vec![vec![crate::config::AgentSidebarToken::Custom(
+                "bad.name".into(),
+            )]],
+        );
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(response["error"]["code"], "invalid_client_presentation");
+
+        server.app.state.sidebar_agents.rows_by_agent.insert(
+            "pi".into(),
+            vec![vec![crate::config::AgentSidebarToken::Styled {
+                token: Box::new(crate::config::AgentSidebarToken::Styled {
+                    token: Box::new(crate::config::AgentSidebarToken::Agent),
+                    style: crate::config::SidebarTokenStyle::default(),
+                }),
+                style: crate::config::SidebarTokenStyle::default(),
+            }]],
+        );
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(response["error"]["code"], "invalid_client_presentation");
+
+        server.app.state.sidebar_agents.rows_by_agent.insert(
+            "pi".into(),
+            vec![vec![crate::config::AgentSidebarToken::Agent; 17]],
+        );
+        let (_, response) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(response["error"]["code"], "invalid_client_presentation");
+    }
+
+    #[test]
+    fn client_presentation_pi_request_is_side_effect_free() {
+        let mut server = test_headless_server();
+        let _client = attach_test_app_client(&mut server, 29);
+        server
+            .app
+            .state
+            .sidebar_agents
+            .rows_by_agent
+            .insert("pi".into(), required_pi_presentation_tokens());
+        server.app.state.sidebar_agents.rows_by_agent.insert(
+            "claude".into(),
+            vec![vec![crate::config::AgentSidebarToken::TerminalTitle]],
+        );
+        server.app.state.agent_panel_scroll = 4;
+
+        let sidebar_before = server.app.state.sidebar_agents.clone();
+        let scroll_before = server.app.state.agent_panel_scroll;
+        let foreground_before = server.foreground_client_id;
+        let activity_before = server.next_activity_stamp;
+        let client_count_before = server.clients.len();
+
+        let (changed, response) = request_client_presentation_pi(&mut server, "test-session");
+
+        assert!(!changed);
+        assert_eq!(response["result"]["client_id"], 29);
+        assert_eq!(server.app.state.sidebar_agents, sidebar_before);
+        assert_eq!(server.app.state.agent_panel_scroll, scroll_before);
+        assert_eq!(server.foreground_client_id, foreground_before);
+        assert_eq!(server.next_activity_stamp, activity_before);
+        assert_eq!(server.clients.len(), client_count_before);
+    }
+
+    #[test]
+    fn client_presentation_pi_tracks_attached_state_only_after_config_reload() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let mut server = test_headless_server();
+        let _client = attach_test_app_client(&mut server, 31);
+        let config_path = server
+            .client_socket_path
+            .parent()
+            .expect("test socket parent")
+            .join("presentation-config.toml");
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
+
+        fs::write(
+            &config_path,
+            "[ui.sidebar.agents.rows_by_agent]\npi = [[\"state_icon\", \"agent\", \"tab\"], [\"state_text\", \"$nm_summary\"]]\n",
+        )
+        .unwrap();
+        let report = server.reload_server_config(false);
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        let (_, applied) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(
+            applied["result"]["tokens"],
+            serde_json::json!([
+                ["state_icon", "agent", "tab"],
+                ["state_text", "$nm_summary"]
+            ])
+        );
+        assert_eq!(applied["result"]["client_id"], 31);
+
+        fs::write(
+            &config_path,
+            "[ui.sidebar.agents.rows_by_agent]\npi = [[\"agent\"], [\"pane\"]]\n",
+        )
+        .unwrap();
+        let (_, before_reload) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(
+            before_reload["result"]["tokens"],
+            applied["result"]["tokens"]
+        );
+
+        let report = server.reload_server_config(false);
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        let (_, after_reload) = request_client_presentation_pi(&mut server, "test-session");
+        assert_eq!(
+            after_reload["result"]["tokens"],
+            serde_json::json!([["agent"], ["pane"]])
+        );
+        assert_eq!(after_reload["result"]["client_id"], 31);
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = fs::remove_file(config_path);
     }
 
     fn retained_test_server(

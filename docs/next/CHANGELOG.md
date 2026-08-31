@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- The socket API can now return the exact effective Pi Agent presentation tokens from one attached full-app client through the session-bound, capability-discoverable `client.presentation.pi` method.
+
 ### Fixed
 - Retained mouse selections now copy when Ctrl+C or Cmd+C arrives before a delayed mouse release instead of forwarding the copy shortcut to the pane. (#3100, thanks @moret)
 - Removing a background worktree workspace no longer changes focus to its parent workspace. (#3098)
